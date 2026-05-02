@@ -1,0 +1,104 @@
+import re
+import os
+import httpx
+import asyncio
+from pyrogram import Client, filters
+from pyrogram.types import Message
+from pyrogram.enums import ChatType
+from youtube_search import YoutubeSearch
+
+DOWNLOAD_SERVER_URL = "http://45.76.130.220:8888"
+DOWNLOAD_FOLDER = "downloads"
+
+if not os.path.exists(DOWNLOAD_FOLDER):
+    os.makedirs(DOWNLOAD_FOLDER)
+
+class VideoDownloader:
+    def __init__(self):
+        self.semaphore = asyncio.Semaphore(10)
+    
+    async def download(self, video_id: str, video: bool = False):
+        async with self.semaphore:
+            download_type = "video" if video else "audio"
+            ext = "mp4" if video else "mp3"
+            url = f"{DOWNLOAD_SERVER_URL}/download/{download_type}/{video_id}"
+            file_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.{ext}")
+            
+            if os.path.exists(file_path):
+                return file_path
+            
+            try:
+                async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                    response = await client.get(url, headers=headers)
+                    
+                    if response.status_code == 200:
+                        with open(file_path, "wb") as f:
+                            f.write(response.content)
+                        return file_path
+                    return None
+            except Exception:
+                return None
+
+downloader = VideoDownloader()
+
+@Client.on_message(filters.command(["/song", "/video", "نزل", "تنزيل", "حمل", "تحميل", "يوت", "بحث"], "") & (filters.group | filters.channel | filters.private))
+async def downloaded(client: Client, message: Message):
+    video_commands = ["/video", "حمل", "تحميل"]
+    
+    if len(message.command) == 1:
+        if message.chat.type == ChatType.PRIVATE:
+            ask = await client.ask(message.chat.id, "**≭︰ارسل اسم المقطع الآن**")
+            query = ask.text
+            m = await ask.reply_text("**≭︰جاري البحث والتحميل... ⚡**")
+        else:
+            try:
+                ask = await client.ask(
+                    message.chat.id,
+                    "**≭︰ارسل الاسم الآن**",
+                    filters=filters.user(message.from_user.id),
+                    reply_to_message_id=message.id,
+                    timeout=15
+                )
+                query = ask.text
+                m = await ask.reply_text("**≭︰جاري البحث والتحميل... ⚡**")
+            except:
+                return
+    else:
+        query = message.text.split(None, 1)[1]
+        m = await message.reply_text("**≭︰جاري البحث والتحميل... ⚡**")
+    
+    is_video = message.command[0] in video_commands
+    
+    try:
+        results = YoutubeSearch(query, max_results=1).to_dict()
+        
+        if not results:
+            await m.edit("**❌ لم يتم العثور على نتائج.**")
+            return
+        
+        link = f"https://youtube.com{results[0]['url_suffix']}"
+        title = results[0]["title"]
+        
+        match = re.search(r"v=([a-zA-Z0-9_-]+)", link)
+        if not match:
+            await m.edit("**❌ خطأ في رابط الفيديو.**")
+            return
+        
+        video_id = match.group(1)
+        
+        file_path = await downloader.download(video_id, is_video)
+        
+        if not file_path:
+            await m.edit("**❌ فشل التحميل من السيرفر.**")
+            return
+        
+        if is_video:
+            await message.reply_video(file_path, caption=title[:200], supports_streaming=True)
+        else:
+            await message.reply_audio(file_path, caption=f"**• Uploader: @{client.me.username}**", title=title[:200])
+        
+        await m.delete()
+        
+    except Exception:
+        await m.edit("**❌ حدث خطأ، حاول مرة أخرى.**")
